@@ -694,8 +694,6 @@ export default function ProductManagement() {
 
       {/* Breadcrumb */}
       <div className="pm-bread">
-        <Link to="/">Home</Link>
-        <span className="pm-bread-sep">›</span>
         <Link to="/admin">Admin</Link>
         <span className="pm-bread-sep">›</span>
         <span className="pm-bread-cur">Product Management</span>

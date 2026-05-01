@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { auth, db } from "../firebase/config";
 import {
@@ -324,7 +324,9 @@ img { display: block; }
   transition: background .15s;
   font-family: var(--font-body);
 }
-.ct-qty-btn:hover { background: var(--bg); }
+.ct-qty-btn:hover:not(:disabled) { background: var(--bg); }
+/* FIX #5: Disabled state for qty buttons during pending ops */
+.ct-qty-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .ct-qty-val {
   width: 36px;
   height: 32px;
@@ -549,6 +551,8 @@ img { display: block; }
 }
 .ct-promo-input::placeholder { text-transform: none; letter-spacing: 0; color: var(--ivory); }
 .ct-promo-input:focus { border-color: var(--gold); }
+/* FIX #7: Visual disabled state on input when promo applied */
+.ct-promo-input:disabled { opacity: 0.6; cursor: not-allowed; background: var(--border); }
 .ct-promo-apply {
   height: 36px;
   padding: 0 14px;
@@ -562,7 +566,8 @@ img { display: block; }
   font-family: var(--font-body);
   transition: opacity .15s;
 }
-.ct-promo-apply:hover { opacity: .85; }
+.ct-promo-apply:hover:not(:disabled) { opacity: .85; }
+.ct-promo-apply:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ── RECOMMENDED ── */
 .ct-rec-sec {
@@ -770,65 +775,130 @@ img { display: block; }
 export default function Cart() {
   const navigate = useNavigate();
 
-  const [user, setUser]         = useState(null);
-  const [cartItems, setCartItems] = useState([]);
-  const [loading, setLoading]   = useState(true);
-  const [promoCode, setPromoCode] = useState("");
+  const [user, setUser]             = useState(null);
+  const [cartItems, setCartItems]   = useState([]);
+  const [loading, setLoading]       = useState(true);
+  const [promoCode, setPromoCode]   = useState("");
   const [promoApplied, setPromoApplied] = useState(false);
-  const [toast, setToast]       = useState({ show: false, msg: "" });
-  const [confirmRemove, setConfirmRemove] = useState(null); // item to confirm remove
+  const [toast, setToast]           = useState({ show: false, msg: "" });
+  const [confirmRemove, setConfirmRemove] = useState(null);
+  // FIX #5: Track in-flight qty operations per item to prevent double-trigger
+  const [pendingQty, setPendingQty] = useState({});
+
+  // FIX #1 & #7: Use a ref to track mount state so we never set state after unmount
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  // FIX #7: Capture user in a ref so doRemove always has the latest value (stale closure fix)
+  const userRef = useRef(null);
 
   // Auth
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
+      if (!mountedRef.current) return;
+      userRef.current = u;
       setUser(u);
       if (!u) setLoading(false);
     });
     return unsub;
   }, []);
 
-  // Real-time cart listener
+  // FIX #6: Reset promoApplied when cart empties so stale discount doesn't persist
+  useEffect(() => {
+    if (cartItems.length === 0 && promoApplied) {
+      setPromoApplied(false);
+      setPromoCode("");
+    }
+  }, [cartItems.length, promoApplied]);
+
+  // FIX #1: Real-time cart listener — properly cleaned up; also FIX #4: onSnapshot error handler
   useEffect(() => {
     if (!user) return;
     const unsub = onSnapshot(
       collection(db, "carts", user.uid, "items"),
       (snap) => {
+        if (!mountedRef.current) return;
         setCartItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        setLoading(false);
+      },
+      // FIX #4: Error callback — Firestore permission errors are now surfaced
+      (err) => {
+        if (!mountedRef.current) return;
+        console.error("Cart snapshot error:", err);
+        showToast("⚠️ Error loading cart: " + err.message);
         setLoading(false);
       }
     );
-    return unsub;
+    return unsub; // cleanup unsubscribes the listener on unmount or user change
   }, [user]);
 
-  const showToast = (msg) => {
+  const showToast = useCallback((msg) => {
+    if (!mountedRef.current) return;
     setToast({ show: true, msg });
-    setTimeout(() => setToast({ show: false, msg: "" }), 2500);
-  };
+    setTimeout(() => {
+      if (mountedRef.current) setToast({ show: false, msg: "" });
+    }, 2500);
+  }, []);
 
   // Remove item (with confirm dialog)
   const confirmAndRemove = (item) => setConfirmRemove(item);
+
+  // FIX #7: Use userRef.current so this never closes over a stale user value
   const doRemove = async () => {
     if (!confirmRemove) return;
-    await deleteDoc(doc(db, "carts", user.uid, "items", confirmRemove.id));
-    showToast("🗑 Item removed");
-    setConfirmRemove(null);
+    const currentUser = userRef.current;
+    if (!currentUser) return;
+    try {
+      await deleteDoc(doc(db, "carts", currentUser.uid, "items", confirmRemove.id));
+      showToast("🗑 Item removed");
+    } catch (err) {
+      // FIX #8: Error handling on deleteDoc
+      console.error("Remove error:", err);
+      showToast("❌ Could not remove item: " + err.message);
+    } finally {
+      if (mountedRef.current) setConfirmRemove(null);
+    }
   };
 
-  // Qty controls
+  // FIX #5: Debounced qty controls — disable buttons while Firestore op is in-flight
   const increaseQty = async (item) => {
-    await updateDoc(doc(db, "carts", user.uid, "items", item.id), {
-      quantity: item.quantity + 1,
-    });
+    if (pendingQty[item.id]) return; // guard against rapid clicks
+    setPendingQty((p) => ({ ...p, [item.id]: true }));
+    try {
+      await updateDoc(doc(db, "carts", user.uid, "items", item.id), {
+        quantity: item.quantity + 1,
+      });
+    } catch (err) {
+      // FIX #8: Error handling on updateDoc
+      console.error("Update qty error:", err);
+      showToast("❌ Could not update quantity");
+    } finally {
+      if (mountedRef.current) setPendingQty((p) => ({ ...p, [item.id]: false }));
+    }
   };
 
+  // FIX #2: Qty decrease — set pending immediately before any async work to prevent race conditions
   const decreaseQty = async (item) => {
+    if (pendingQty[item.id]) return; // guard against rapid clicks
     if (item.quantity === 1) {
       setConfirmRemove(item);
       return;
     }
-    await updateDoc(doc(db, "carts", user.uid, "items", item.id), {
-      quantity: item.quantity - 1,
-    });
+    setPendingQty((p) => ({ ...p, [item.id]: true }));
+    try {
+      await updateDoc(doc(db, "carts", user.uid, "items", item.id), {
+        quantity: item.quantity - 1,
+      });
+    } catch (err) {
+      // FIX #8: Error handling on updateDoc
+      console.error("Update qty error:", err);
+      showToast("❌ Could not update quantity");
+    } finally {
+      if (mountedRef.current) setPendingQty((p) => ({ ...p, [item.id]: false }));
+    }
   };
 
   // Promo code
@@ -842,11 +912,23 @@ export default function Cart() {
   };
 
   // Totals
-  const subtotal    = cartItems.reduce((s, i) => s + (i.price ?? 0) * (i.quantity ?? 1), 0);
-  const discount    = promoApplied ? Math.round(subtotal * 0.1) : 0;
-  const delivery    = subtotal >= 999 ? 0 : 99;
-  const total       = subtotal - discount + delivery;
-  const totalItems  = cartItems.reduce((s, i) => s + (i.quantity ?? 1), 0);
+  const subtotal   = cartItems.reduce((s, i) => s + (i.price ?? 0) * (i.quantity ?? 1), 0);
+  const discount   = promoApplied ? Math.round(subtotal * 0.1) : 0;
+  const delivery   = subtotal >= 999 ? 0 : 99;
+  const total      = subtotal - discount + delivery;
+  const totalItems = cartItems.reduce((s, i) => s + (i.quantity ?? 1), 0);
+
+  // FIX #3: Savings calculation — correctly compute how much was saved
+  // delivery saved = 99 only when delivery IS free (subtotal >= 999)
+  const deliverySaved = subtotal >= 999 ? 99 : 0;
+  const totalSaved    = discount + deliverySaved;
+
+  // FIX #5: Helper — check if a product navigation is safe before calling navigate
+  const navigateToProduct = (productId) => {
+    if (productId && productId !== "undefined") {
+      navigate(`/product/${productId}`);
+    }
+  };
 
   // ── Loading ──────────────────────────────────────────────────────────────
   if (loading) {
@@ -914,12 +996,6 @@ export default function Cart() {
             </svg>
             <span className="lbl">Home</span>
           </Link>
-          <Link to="/wishlist" className="ct-nav-btn">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/>
-            </svg>
-            <span className="lbl">Wishlist</span>
-          </Link>
         </div>
       </nav>
 
@@ -964,11 +1040,12 @@ export default function Cart() {
                     className="ct-item"
                     style={{ animationDelay: `${idx * 0.06}s` }}
                   >
-                    {/* Product image → navigate to product detail */}
+                    {/* FIX #5: Guard productId before navigating */}
                     <div
                       className="ct-item-img"
-                      onClick={() => item.productId && navigate(`/product/${item.productId}`)}
-                      title="View product details"
+                      onClick={() => navigateToProduct(item.productId)}
+                      title={item.productId ? "View product details" : undefined}
+                      style={{ cursor: item.productId ? "pointer" : "default" }}
                     >
                       {item.image
                         ? <img src={item.image} alt={item.name} />
@@ -981,11 +1058,12 @@ export default function Cart() {
                         <div className="ct-item-cat">{item.category}</div>
                       )}
 
-                      {/* Product name → navigate to product detail */}
+                      {/* FIX #5: Guard productId on name click too */}
                       <span
                         className="ct-item-name"
-                        onClick={() => item.productId && navigate(`/product/${item.productId}`)}
-                        title="View product details"
+                        onClick={() => navigateToProduct(item.productId)}
+                        style={{ cursor: item.productId ? "pointer" : "default" }}
+                        title={item.productId ? "View product details" : undefined}
                       >
                         {item.name ?? "Product"}
                       </span>
@@ -996,11 +1074,23 @@ export default function Cart() {
                       </div>
 
                       <div className="ct-item-actions">
-                        {/* Qty stepper */}
+                        {/* FIX #5: Qty stepper — disabled while op is pending */}
                         <div className="ct-qty">
-                          <button className="ct-qty-btn" onClick={() => decreaseQty(item)}>−</button>
+                          <button
+                            className="ct-qty-btn"
+                            onClick={() => decreaseQty(item)}
+                            disabled={!!pendingQty[item.id]}
+                          >
+                            −
+                          </button>
                           <div className="ct-qty-val">{item.quantity ?? 1}</div>
-                          <button className="ct-qty-btn" onClick={() => increaseQty(item)}>+</button>
+                          <button
+                            className="ct-qty-btn"
+                            onClick={() => increaseQty(item)}
+                            disabled={!!pendingQty[item.id]}
+                          >
+                            +
+                          </button>
                         </div>
 
                         {/* Subtotal */}
@@ -1018,8 +1108,8 @@ export default function Cart() {
                         </button>
                       </div>
 
-                      {/* View detail link */}
-                      {item.productId && (
+                      {/* FIX #5: Only render view-detail link if productId is valid */}
+                      {item.productId && item.productId !== "undefined" && (
                         <Link
                           to={`/product/${item.productId}`}
                           className="ct-view-detail"
@@ -1043,12 +1133,14 @@ export default function Cart() {
                   {promoApplied && <span style={{ fontSize: 10, color: T.green, marginLeft: 6, fontWeight: 700 }}>✓ Applied</span>}
                 </h4>
                 <div className="ct-promo-row">
+                  {/* FIX #7: Input is fully disabled (not just visually) when promo applied */}
                   <input
                     className="ct-promo-input"
                     placeholder="Enter promo code"
                     value={promoCode}
-                    onChange={(e) => setPromoCode(e.target.value)}
+                    onChange={(e) => !promoApplied && setPromoCode(e.target.value)}
                     disabled={promoApplied}
+                    readOnly={promoApplied}
                   />
                   <button className="ct-promo-apply" onClick={applyPromo} disabled={promoApplied}>
                     {promoApplied ? "Applied ✓" : "Apply"}
@@ -1096,9 +1188,11 @@ export default function Cart() {
                     <span className="ct-sum-total-key">TOTAL</span>
                     <span className="ct-sum-total-val">₹{total.toLocaleString()}</span>
                   </div>
-                  {(discount > 0 || delivery === 0) && (
+
+                  {/* FIX #3: Correct savings calculation using pre-computed totalSaved */}
+                  {totalSaved > 0 && (
                     <div className="ct-sum-savings">
-                      🎉 You're saving ₹{(discount + (delivery === 0 && subtotal >= 999 ? 99 : 0)).toLocaleString()} on this order
+                      🎉 You're saving ₹{totalSaved.toLocaleString()} on this order
                     </div>
                   )}
                 </div>
@@ -1131,7 +1225,6 @@ export default function Cart() {
               <h2>You May Also Like</h2>
               <Link to="/user" className="ct-see">View all →</Link>
             </div>
-            {/* Recommended grid — navigates to product detail on click */}
             <div className="ct-rec-grid">
               {[
                 { icon: "💧", name: "RO Membrane Filter", cat: "Spare Parts", price: 899 },

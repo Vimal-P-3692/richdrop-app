@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { db } from "../firebase/config";
-import { collection, addDoc } from "firebase/firestore";
+import { collection, addDoc, onSnapshot, deleteDoc, doc, updateDoc } from "firebase/firestore";
 import { Link } from "react-router-dom";
 
 // ── Design Tokens ─────────────────────────────────────────────────────────────
@@ -441,8 +441,6 @@ select.ap-input { cursor: pointer; }
 }
 `;
 
-const CATEGORIES = ["Skincare", "Haircare", "Fragrance", "Wellness", "Accessories"];
-
 export default function AddProduct() {
   const [name,      setName]      = useState("");
   const [price,     setPrice]     = useState("");
@@ -452,11 +450,66 @@ export default function AddProduct() {
   const [preview,   setPreview]   = useState(null);
   const [loading,   setLoading]   = useState(false);
   const [toast,     setToast]     = useState(null); // { msg, type }
+  const [categories, setCategories] = useState([]);
+  const [newCategory, setNewCategory] = useState("");
+  const [editId, setEditId] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  // 🔥 Real-time categories
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "categories"), (snap) => {
+      setCategories(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, []);
 
   // ── Toast helper ────────────────────────────────────────────────────────────
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3500);
+  };
+
+  // ➕ Add category
+  const addCategory = async () => {
+    if (!newCategory.trim()) return showToast("⚠️ Enter a category name", "error");
+    setSaving(true);
+    try {
+      await addDoc(collection(db, "categories"), {
+        name: newCategory.trim(),
+        createdAt: new Date(),
+      });
+      setNewCategory("");
+      showToast("✅ Category added", "success");
+    } catch (e) {
+      showToast("❌ " + e.message, "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ✏️ Update category
+  const updateCategory = async () => {
+    if (!editName.trim()) return showToast("⚠️ Name cannot be empty", "error");
+    try {
+      await updateDoc(doc(db, "categories", editId), { name: editName.trim() });
+      showToast("✅ Category updated", "success");
+      setEditId(null);
+      setEditName("");
+    } catch (e) {
+      showToast("❌ " + e.message, "error");
+    }
+  };
+
+  // ❌ Delete category
+  const deleteCategory = async (id, name) => {
+    if (!window.confirm(`Delete category "${name}"?`)) return;
+    try {
+      await deleteDoc(doc(db, "categories", id));
+      showToast(`🗑️ "${name}" deleted`, "success");
+    } catch (e) {
+      showToast("❌ " + e.message, "error");
+    }
   };
 
   // ── Image select ────────────────────────────────────────────────────────────
@@ -543,8 +596,6 @@ export default function AddProduct() {
 
       {/* Breadcrumb */}
       <div className="ap-bread">
-        <Link to="/">Home</Link>
-        <span className="ap-bread-sep">›</span>
         <Link to="/admin">Admin Dashboard</Link>
         <span className="ap-bread-sep">›</span>
         <span className="ap-bread-cur">Add Product</span>
@@ -605,7 +656,7 @@ export default function AddProduct() {
                   onChange={(e) => setCategory(e.target.value)}
                 >
                   <option value="">Select category…</option>
-                  {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+                  {categories.map((c) => <option key={c.id}>{c.name}</option>)}
                 </select>
               </div>
 
@@ -663,7 +714,97 @@ export default function AddProduct() {
 
       </div>
 
-      {/* Toast */}
+      {/* Categories Panel */}
+      <div className="ap-page" style={{ paddingTop: 0 }}>
+        <div className="ap-section-label">Manage Categories</div>
+        <div className="ap-form-card">
+          <div className="ap-form-body">
+            {/* Add category */}
+            <div style={{ marginBottom: 20 }}>
+              <label className="ap-label">New Category</label>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <input
+                  className="ap-input"
+                  placeholder="e.g. Water Purifiers"
+                  value={newCategory}
+                  onChange={(e) => setNewCategory(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && addCategory()}
+                />
+                <button
+                  className="ap-btn-submit"
+                  onClick={addCategory}
+                  disabled={saving}
+                  style={{ padding: "11px 20px", minWidth: 100, flexShrink: 0 }}
+                >
+                  {saving ? "…" : "Add"}
+                </button>
+              </div>
+            </div>
+
+            {/* Category list */}
+            {categories.length === 0 ? (
+              <div style={{ padding: "20px", textAlign: "center", color: "var(--ivory)", fontSize: 12, background: "var(--bg)", borderRadius: 10 }}>
+                No categories yet. Add one above.
+              </div>
+            ) : (
+              <div>
+                {categories.map((c, i) => (
+                  <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 0", borderBottom: i < categories.length - 1 ? "1px solid var(--border)" : "none" }}>
+                    <div style={{ flex: 1 }}>
+                      {editId === c.id ? (
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          <input
+                            className="ap-input"
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            onKeyDown={(e) => e.key === "Enter" && updateCategory()}
+                            autoFocus
+                            style={{ height: 32, fontSize: 12 }}
+                          />
+                          <button
+                            className="ap-btn-submit"
+                            onClick={updateCategory}
+                            style={{ padding: "0 12px", height: 32, flexShrink: 0 }}
+                          >
+                            Save
+                          </button>
+                          <button
+                            className="ap-btn-reset"
+                            onClick={() => { setEditId(null); setEditName(""); }}
+                            style={{ padding: "0 10px", height: 32, flexShrink: 0 }}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--navy)" }}>{c.name}</div>
+                      )}
+                    </div>
+                    {editId !== c.id && (
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button
+                          className="ap-btn-reset"
+                          style={{ height: 28, padding: "0 10px", fontSize: 10 }}
+                          onClick={() => { setEditId(c.id); setEditName(c.name); }}
+                        >
+                          ✏️ Edit
+                        </button>
+                        <button
+                          className="ap-btn-reset"
+                          style={{ height: 28, padding: "0 10px", fontSize: 10, color: "var(--red)", borderColor: "rgba(176,58,46,.3)" }}
+                          onClick={() => deleteCategory(c.id, c.name)}
+                        >
+                          🗑
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
       {toast && (
         <div className={`ap-toast ${toast.type}`}>
           {toast.type === "success" ? "✅" : "❌"} {toast.msg}

@@ -296,6 +296,7 @@ button { font-family: var(--font-body); cursor: pointer; border: none; backgroun
 }
 .db-stat-trend.up   { background: rgba(46,125,79,.1); color: var(--green); border: 1px solid rgba(46,125,79,.2); }
 .db-stat-trend.live { background: rgba(201,168,76,.1); color: var(--gold); border: 1px solid rgba(201,168,76,.2); }
+.db-stat-trend.warn { background: rgba(176,58,46,.08); color: var(--red);  border: 1px solid rgba(176,58,46,.2); }
 .db-stat-val {
   font-family: var(--font-display);
   font-size: 34px;
@@ -372,8 +373,9 @@ button { font-family: var(--font-body); cursor: pointer; border: none; backgroun
   justify-content: center;
   font-size: 22px;
 }
-.db-action-icon-wrap.gold  { background: rgba(201,168,76,.1);  border: 1px solid rgba(201,168,76,.2); }
-.db-action-icon-wrap.green { background: rgba(46,125,79,.1);   border: 1px solid rgba(46,125,79,.2); }
+.db-action-icon-wrap.gold       { background: rgba(201,168,76,.1);  border: 1px solid rgba(201,168,76,.2); }
+.db-action-icon-wrap.green      { background: rgba(46,125,79,.1);   border: 1px solid rgba(46,125,79,.2); }
+.db-action-icon-wrap.blue       { background: rgba(26,111,163,.1);  border: 1px solid rgba(26,111,163,.2); }
 .db-action-icon-wrap.navy-light { background: rgba(255,255,255,.08); border: 1px solid rgba(201,168,76,.2); }
 
 .db-action-title {
@@ -405,6 +407,21 @@ button { font-family: var(--font-body); cursor: pointer; border: none; backgroun
   letter-spacing: .5px;
 }
 .db-action-card.navy .db-action-cta { border-color: rgba(201,168,76,.15); }
+
+/* ── ERROR BANNER ── */
+.db-error {
+  background: rgba(176,58,46,.08);
+  border: 1px solid rgba(176,58,46,.25);
+  border-radius: 10px;
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--red);
+  font-weight: 500;
+  margin-bottom: 24px;
+}
 
 /* ── RECENT ORDERS TABLE ── */
 .db-recent {
@@ -519,7 +536,7 @@ button { font-family: var(--font-body); cursor: pointer; border: none; backgroun
   .db-table th:nth-child(4),
   .db-table td:nth-child(4) { display: none; }
   .db-nav-badge { display: none; }
-  .db-signout span { display: none; }
+  .db-signout span:last-child { display: none; }
   .db-signout { padding: 6px 10px; }
 }
 `;
@@ -533,28 +550,39 @@ const STATUS_CONFIG = {
 
 export default function AdminDashboard() {
   const [products, setProducts] = useState([]);
-  const [orders, setOrders]     = useState([]);
-  const [loading, setLoading]   = useState(true);
+  const [orders,   setOrders]   = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  // FIX Bug 14: track Firestore errors so admin sees them
+  const [error,    setError]    = useState(null);
   const navigate = useNavigate();
 
   // 🔥 Real-time products
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, "products"), (snap) => {
-      setProducts(snap.docs);
-    });
+    const unsub = onSnapshot(
+      collection(db, "products"),
+      (snap) => { setProducts(snap.docs); },
+      (err)  => { console.error("Products error:", err); setError("Failed to load products."); }
+    );
     return () => unsub();
   }, []);
 
   // 🔥 Real-time orders
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, "orders"), (snap) => {
-      setOrders(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      setLoading(false);
-    });
+    const unsub = onSnapshot(
+      collection(db, "orders"),
+      (snap) => {
+        setOrders(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        setLoading(false);
+      },
+      (err) => {
+        console.error("Orders error:", err);
+        setError("Failed to load orders.");
+        setLoading(false);
+      }
+    );
     return () => unsub();
   }, []);
 
-  // Sign out handler
   const handleSignOut = async () => {
     try {
       const auth = getAuth();
@@ -565,10 +593,21 @@ export default function AdminDashboard() {
     }
   };
 
-  // Derived stats
-  const revenue   = orders.filter((o) => o.status !== "Cancelled").reduce((s, o) => s + (o.total ?? 0), 0);
+  // ── Derived stats ──────────────────────────────────────────────────────────
+
+  // FIX Bug 8: Revenue = Delivered orders only (not all non-Cancelled)
+  const revenue   = orders
+    .filter((o) => o.status === "Delivered")
+    .reduce((s, o) => s + (o.total ?? 0), 0);
+
   const delivered = orders.filter((o) => o.status === "Delivered").length;
-  const pending   = orders.filter((o) => o.status === "Pending" || o.status === "placed").length;
+
+  // FIX Bug 8 (cont): separate pending count for its own clear stat
+  const pending   = orders.filter(
+    (o) => o.status === "Pending" || o.status === "placed"
+  ).length;
+
+  const cancelled = orders.filter((o) => o.status === "Cancelled").length;
 
   // 5 most recent orders
   const recent = [...orders]
@@ -581,7 +620,13 @@ export default function AdminDashboard() {
 
       {/* Topbar */}
       <div className="db-topbar">
-        {[["⚡","Real-time","data"],["📦","Orders",orders.length],["✅","Delivered",delivered],["💰","Revenue",`₹${revenue.toLocaleString()}`]].map(([ic,b,a])=>(
+        {[
+          ["⚡", "Real-time", "data"],
+          ["📦", "Orders",    orders.length],
+          ["✅", "Delivered", delivered],
+          // FIX Bug 8: show confirmed revenue (Delivered only)
+          ["💰", "Revenue",   `₹${revenue.toLocaleString()}`],
+        ].map(([ic, b, a]) => (
           <span key={b}>{ic} <b>{b}</b> {a}</span>
         ))}
       </div>
@@ -606,8 +651,6 @@ export default function AdminDashboard() {
 
       {/* Breadcrumb */}
       <div className="db-bread">
-        <a href="/">Home</a>
-        <span className="db-bread-sep">›</span>
         <span className="db-bread-cur">Admin Dashboard</span>
       </div>
 
@@ -620,16 +663,40 @@ export default function AdminDashboard() {
           <p>Real-time overview of your RichDrop store</p>
         </div>
 
+        {/* FIX Bug 14: show error banner if Firestore fails */}
+        {error && (
+          <div className="db-error">
+            ⚠️ {error} — Check your Firestore connection or security rules.
+          </div>
+        )}
+
         {/* Stats */}
         <div className="db-section-label">Key Metrics</div>
         <div className="db-stats">
           {[
-            { icon: "📦", val: products.length,              key: "Total Products", cls: "gold",  trend: "LIVE", trendCls: "live" },
-            { icon: "🛒", val: orders.length,                key: "Total Orders",   cls: "blue",  trend: "LIVE", trendCls: "live" },
-            { icon: "✅", val: delivered,                    key: "Delivered",      cls: "green", trend: "↑ Good", trendCls: "up" },
-            { icon: "💰", val: `₹${revenue.toLocaleString()}`, key: "Revenue",      cls: "gold",  trend: "↑ Net", trendCls: "up" },
+            {
+              icon: "📦", val: products.length,
+              key: "Total Products", cls: "gold",
+              trend: "LIVE", trendCls: "live",
+            },
+            {
+              icon: "🛒", val: orders.length,
+              key: "Total Orders", cls: "blue",
+              trend: "LIVE", trendCls: "live",
+            },
+            {
+              icon: "✅", val: delivered,
+              key: "Delivered", cls: "green",
+              trend: "↑ Completed", trendCls: "up",
+            },
+            {
+              // FIX Bug 8: revenue label clarifies it is confirmed (Delivered) revenue
+              icon: "💰", val: `₹${revenue.toLocaleString()}`,
+              key: "Confirmed Revenue", cls: "gold",
+              trend: "↑ Net", trendCls: "up",
+            },
           ].map((s, i) => (
-            <div className="db-stat" key={s.key} style={{ animationDelay: `${i * .07}s` }}>
+            <div className="db-stat" key={s.key} style={{ animationDelay: `${i * 0.07}s` }}>
               <div className="db-stat-top">
                 <div className={`db-stat-icon ${s.cls}`}>{s.icon}</div>
                 <div className={`db-stat-trend ${s.trendCls}`}>{s.trend}</div>
@@ -640,6 +707,30 @@ export default function AdminDashboard() {
               </div>
             </div>
           ))}
+        </div>
+
+        {/* Secondary stats row — pending & cancelled */}
+        <div className="db-stats" style={{ gridTemplateColumns: "repeat(2,1fr)", marginTop: -18 }}>
+          <div className="db-stat" style={{ animationDelay: ".28s" }}>
+            <div className="db-stat-top">
+              <div className="db-stat-icon gold">⏳</div>
+              <div className="db-stat-trend live">LIVE</div>
+            </div>
+            <div>
+              <div className="db-stat-val">{pending}</div>
+              <div className="db-stat-key">Pending / Placed</div>
+            </div>
+          </div>
+          <div className="db-stat" style={{ animationDelay: ".35s" }}>
+            <div className="db-stat-top">
+              <div className="db-stat-icon red">❌</div>
+              <div className="db-stat-trend warn">↓ Lost</div>
+            </div>
+            <div>
+              <div className="db-stat-val">{cancelled}</div>
+              <div className="db-stat-key">Cancelled</div>
+            </div>
+          </div>
         </div>
 
         {/* Quick Actions */}
@@ -670,14 +761,19 @@ export default function AdminDashboard() {
             </div>
           </Link>
 
-          <Link to="/admin" className="db-action-card navy" style={{ animationDelay: ".15s" }}>
-            <div className="db-action-icon-wrap navy-light">📊</div>
+          {/*
+            FIX Bug 10: Replaced the useless "Dashboard Home → /admin" self-link
+            with a useful "Add Product" shortcut that actually saves the admin a
+            navigation step.
+          */}
+          <Link to="/add-product" className="db-action-card navy" style={{ animationDelay: ".15s" }}>
+            <div className="db-action-icon-wrap navy-light">➕</div>
             <div>
-              <div className="db-action-title">Dashboard Home</div>
-              <div className="db-action-desc">Return to the main dashboard overview and refresh metrics.</div>
+              <div className="db-action-title">Add Product</div>
+              <div className="db-action-desc">Quickly list a new product to the store catalogue.</div>
             </div>
             <div className="db-action-cta">
-              <span>REFRESH</span>
+              <span>ADD NEW</span>
               <span>→</span>
             </div>
           </Link>
@@ -719,20 +815,32 @@ export default function AdminDashboard() {
                   const cfg  = STATUS_CONFIG[order.status] ?? { emoji: "•", label: order.status ?? "—" };
                   return (
                     <tr key={order.id}>
-                      <td><span className="db-td-id">#{order.id.slice(0, 8).toUpperCase()}</span></td>
                       <td>
-                        <div className="db-td-name">{addr.firstName ?? ""} {addr.lastName ?? ""}</div>
+                        <span className="db-td-id">#{order.id.slice(0, 8).toUpperCase()}</span>
+                      </td>
+                      <td>
+                        <div className="db-td-name">
+                          {addr.firstName ?? ""} {addr.lastName ?? ""}
+                        </div>
                         <div className="db-td-muted">{addr.city ?? "—"}</div>
                       </td>
-                      <td><span className="db-td-muted">{(order.items ?? []).length} item{(order.items ?? []).length !== 1 ? "s" : ""}</span></td>
+                      <td>
+                        <span className="db-td-muted">
+                          {(order.items ?? []).length} item{(order.items ?? []).length !== 1 ? "s" : ""}
+                        </span>
+                      </td>
                       <td>
                         <span className="db-td-muted">
                           {order.createdAt?.toDate
-                            ? order.createdAt.toDate().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
+                            ? order.createdAt.toDate().toLocaleDateString("en-IN", {
+                                day: "numeric", month: "short", year: "numeric",
+                              })
                             : "—"}
                         </span>
                       </td>
-                      <td><span className="db-td-amt">₹{(order.total ?? 0).toLocaleString()}</span></td>
+                      <td>
+                        <span className="db-td-amt">₹{(order.total ?? 0).toLocaleString()}</span>
+                      </td>
                       <td>
                         <span className={`db-badge ${order.status}`}>
                           {cfg.emoji} {cfg.label}

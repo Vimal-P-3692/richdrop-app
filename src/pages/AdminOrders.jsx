@@ -324,8 +324,6 @@ export default function AdminOrders() {
       </nav>
 
       <div className="ad-bread">
-        <a href="/">Home</a>
-        <span className="ad-bread-sep">›</span>
         <a href="/admin">Admin</a>
         <span className="ad-bread-sep">›</span>
         <span className="ad-bread-cur">Orders</span>

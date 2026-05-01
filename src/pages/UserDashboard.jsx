@@ -964,12 +964,6 @@ export default function UserDashboard() {
             </svg>
             <span className="lbl">Orders</span>
           </Link>
-          <Link to="/wishlist" className="ud-nav-btn">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/>
-            </svg>
-            <span className="lbl">Wishlist</span>
-          </Link>
           <Link to="/cart" className="ud-nav-btn">
             {cartCount > 0 && <span className="ud-cart-badge">{cartCount}</span>}
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -993,9 +987,6 @@ export default function UserDashboard() {
             {c.name}
           </div>
         ))}
-        <Link to="/orders" className="ud-subnav-item">Today's Deals</Link>
-        <Link to="/service" className="ud-subnav-item">Service Center</Link>
-        <Link to="/profile" className="ud-subnav-item">Support</Link>
       </div>
 
       {/* ── Hero ── */}
@@ -1060,36 +1051,6 @@ export default function UserDashboard() {
           </>
         )}
 
-        {/* ── Deals Strip ── */}
-        {!search && deals.length > 0 && (
-          <div className="ud-deals">
-            <div className="ud-deals-hdr">
-              <h3>⚡ Today's Deals</h3>
-              <span className="ud-deals-count">{deals.length} deals live</span>
-            </div>
-            <div className="ud-deals-row">
-              {deals.map((p) => {
-                const discPct = 10 + hashNum(p.id + "p", 40);
-                return (
-                  <div
-                    key={p.id}
-                    className="ud-deal-chip"
-                    onClick={() => navigate(`/product/${p.id}`)}
-                  >
-                    {p.image
-                      ? <img src={p.image} alt={p.name} className="ud-deal-chip-img" style={{ borderRadius: 8 }} />
-                      : <div className="ud-deal-chip-img">💧</div>
-                    }
-                    <div className="ud-deal-name">{p.name}</div>
-                    <div className="ud-deal-off">Up to {discPct}% off</div>
-                    <div className="ud-deal-price">₹{(p.price ?? 0).toLocaleString("en-IN")}</div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
         {/* ── Product Grid ── */}
         <div className="ud-sec-hdr">
           <h2>
@@ -1144,18 +1105,6 @@ export default function UserDashboard() {
                       ))}
                     </div>
                   )}
-
-                  {/* Wishlist */}
-                  <div
-                    className="ud-wish"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      showToast(`🤍 Added "${product.name}" to wishlist`);
-                    }}
-                    title="Add to wishlist"
-                  >
-                    🤍
-                  </div>
 
                   {/* Image */}
                   <div className="ud-pcard-img">
